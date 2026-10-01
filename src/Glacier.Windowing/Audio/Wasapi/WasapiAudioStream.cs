@@ -11,7 +11,7 @@ public sealed class WasapiAudioStream : IAudioStream
     private readonly SpscAudioRingBuffer _ringBuffer;
     private readonly int _sampleRate;
     private readonly int _channels;
-    private readonly Thread _workerThread;
+    private Thread? _workerThread;
     private readonly AutoResetEvent _eventHandle = new(false);
     private volatile bool _isRunning;
     private bool _disposed;
@@ -32,13 +32,6 @@ public sealed class WasapiAudioStream : IAudioStream
         _sampleRate = sampleRate;
         _channels = channels;
         _ringBuffer = new SpscAudioRingBuffer(bufferCapacity);
-
-        _workerThread = new Thread(RenderLoop)
-        {
-            Name = "Glacier.WASAPI.AudioPump",
-            IsBackground = true,
-            Priority = ThreadPriority.Highest
-        };
     }
 
     public bool Write(ReadOnlySpan<float> samples)
@@ -58,8 +51,14 @@ public sealed class WasapiAudioStream : IAudioStream
         if (_isRunning) return;
 
         _isRunning = true;
-        if (!_workerThread.IsAlive)
+        if (_workerThread == null || !_workerThread.IsAlive)
         {
+            _workerThread = new Thread(RenderLoop)
+            {
+                Name = "Glacier.WASAPI.AudioPump",
+                IsBackground = true,
+                Priority = ThreadPriority.Highest
+            };
             _workerThread.Start();
         }
     }
