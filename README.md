@@ -1,3 +1,5 @@
+![Glacier.Windowing Banner](assets/banner.jpg)
+
 # 🪟 Glacier.Windowing
 
 **Pure C# .NET 10 Cross-Platform Windowing, Hardware Presentation HAL, Low-Latency Audio, and Mobile Surface HAL**
@@ -42,6 +44,10 @@ Existing cross-platform desktop and game frameworks in the .NET ecosystem (`Silk
 ---
 
 ## 3. Architecture & Subsystems
+
+<p align="center">
+  <img src="assets/architecture.jpg" alt="Glacier.Windowing Architecture Blueprint" width="100%" />
+</p>
 
 ```
                               Glacier.Windowing Pipeline
