@@ -262,6 +262,12 @@ python scripts/security_check.py Glacier.Windowing
 
 ---
 
+## Credits
+
+Developed by **Ian Cowley** and **Antigravity (Google DeepMind)**.
+
+---
+
 ## 8. License
 
 MIT License. Copyright (c) 2026 Ian Cowley.
