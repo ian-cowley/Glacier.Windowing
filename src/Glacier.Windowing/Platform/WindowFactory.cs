@@ -1,7 +1,6 @@
 namespace Glacier.Windowing.Platform;
 
 using System;
-using System.Runtime.InteropServices;
 
 /// <summary>
 /// Identifies the native platform windowing implementation.
@@ -18,7 +17,7 @@ public enum PlatformKind
 }
 
 /// <summary>
-/// Factory for creating native or simulated OS windows across supported platforms.
+/// Factory for creating native or headless OS windows across supported platforms.
 /// </summary>
 public static class WindowFactory
 {
@@ -59,10 +58,11 @@ public static class WindowFactory
     }
 
     /// <summary>
-    /// Creates a native OS window matching the host environment, or falls back to headless window in non-graphical environments.
+    /// Creates a native OS window matching the host environment, or falls back to <see cref="Headless.HeadlessWindow"/>
+    /// in non-graphical environments (such as headless Linux/Windows CI runners or SSH sessions).
     /// </summary>
     /// <param name="options">Window configuration options.</param>
-    /// <returns>A concrete IWindow instance.</returns>
+    /// <returns>A concrete <see cref="IWindow"/> instance.</returns>
     public static IWindow CreateWindow(WindowOptions? options = null)
     {
         options ??= new WindowOptions();
@@ -75,30 +75,55 @@ public static class WindowFactory
             }
             catch
             {
-                // Fallback to Headless window if running without desktop session (e.g. non-interactive CI service)
                 return new Headless.HeadlessWindow(options);
             }
         }
+
         if (OperatingSystem.IsMacOS())
         {
-            return new Mac.CocoaWindow(options);
+            try
+            {
+                return new Mac.CocoaWindow(options);
+            }
+            catch
+            {
+                return new Headless.HeadlessWindow(options);
+            }
         }
+
         if (OperatingSystem.IsAndroid())
         {
             return new Mobile.AndroidNativeWindow(options);
         }
+
         if (OperatingSystem.IsIOS())
         {
             return new Mobile.IosUiWindow(options);
         }
+
         if (OperatingSystem.IsLinux())
         {
             string? wayland = Environment.GetEnvironmentVariable("WAYLAND_DISPLAY");
             if (!string.IsNullOrEmpty(wayland))
             {
-                return new Linux.WaylandWindow(options);
+                try
+                {
+                    return new Linux.WaylandWindow(options);
+                }
+                catch
+                {
+                    // Fall through to X11 or Headless
+                }
             }
-            return new Linux.X11Window(options);
+
+            try
+            {
+                return new Linux.X11Window(options);
+            }
+            catch
+            {
+                return new Headless.HeadlessWindow(options);
+            }
         }
 
         return new Headless.HeadlessWindow(options);
@@ -108,7 +133,7 @@ public static class WindowFactory
     /// Creates a headless / virtual window for unit testing and CI pipelines.
     /// </summary>
     /// <param name="options">Window configuration options.</param>
-    /// <returns>A HeadlessWindow instance.</returns>
+    /// <returns>A <see cref="Headless.HeadlessWindow"/> instance.</returns>
     public static IWindow CreateHeadless(WindowOptions? options = null)
     {
         return new Headless.HeadlessWindow(options ?? new WindowOptions());

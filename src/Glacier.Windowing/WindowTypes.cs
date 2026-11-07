@@ -24,7 +24,7 @@ public readonly record struct WindowSize(int Width, int Height)
 /// <param name="Width">Backbuffer width in pixels.</param>
 /// <param name="Height">Backbuffer height in pixels.</param>
 /// <param name="BufferCount">Number of backbuffers (2 for double buffering, 3 for triple buffering).</param>
-/// <param name="EnableHdr">Whether to request HDR10 10-bit wide-color-gamut format.</param>
+/// <param name="EnableHdr">Whether to request HDR10 / wide-color-gamut format.</param>
 /// <param name="LowLatencyWaitable">Whether to enable low-latency waitable object presentation synchronization.</param>
 public readonly record struct SwapchainDescription(
     int Width,
@@ -38,8 +38,8 @@ public readonly record struct SwapchainDescription(
 /// </summary>
 /// <param name="Type">The category of the input event.</param>
 /// <param name="KeyOrButton">Virtual key code, mouse button index, or touch pointer ID.</param>
-/// <param name="X">Normalized or absolute horizontal position / delta coordinate.</param>
-/// <param name="Y">Normalized or absolute vertical position / delta coordinate.</param>
+/// <param name="X">Normalized or absolute horizontal position, or relative horizontal delta for <see cref="InputEventType.MouseDelta"/>.</param>
+/// <param name="Y">Normalized or absolute vertical position, scroll wheel delta, or relative vertical delta for <see cref="InputEventType.MouseDelta"/>.</param>
 /// <param name="TimestampNs">Nanosecond precision hardware timestamp.</param>
 public readonly record struct InputEvent(
     InputEventType Type,
@@ -61,7 +61,8 @@ public enum InputEventType : byte
     MouseWheel = 5,
     TouchStart = 6,
     TouchMove = 7,
-    TouchEnd = 8
+    TouchEnd = 8,
+    MouseDelta = 9
 }
 
 /// <summary>

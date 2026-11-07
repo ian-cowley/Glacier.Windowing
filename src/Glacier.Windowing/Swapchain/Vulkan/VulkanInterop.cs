@@ -5,13 +5,14 @@ using System.Runtime.InteropServices;
 
 internal static unsafe partial class VulkanInterop
 {
-    private const string VulkanDll = "vulkan-1";
-
     public const int VK_SUCCESS = 0;
     public const int VK_NOT_READY = 1;
     public const int VK_TIMEOUT = 2;
     public const int VK_SUBOPTIMAL_KHR = 1000001003;
     public const int VK_ERROR_OUT_OF_DATE_KHR = -1000001004;
+
+    public const int VK_STRUCTURE_TYPE_APPLICATION_INFO = 0;
+    public const int VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1;
 
     public const int VK_FORMAT_R8G8B8A8_UNORM = 37;
     public const int VK_FORMAT_B8G8R8A8_UNORM = 44;
@@ -29,6 +30,31 @@ internal static unsafe partial class VulkanInterop
 
     public const uint VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010;
     public const uint VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct VkApplicationInfo
+    {
+        public int sType;
+        public IntPtr pNext;
+        public byte* pApplicationName;
+        public uint applicationVersion;
+        public byte* pEngineName;
+        public uint engineVersion;
+        public uint apiVersion;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct VkInstanceCreateInfo
+    {
+        public int sType;
+        public IntPtr pNext;
+        public uint flags;
+        public VkApplicationInfo* pApplicationInfo;
+        public uint enabledLayerCount;
+        public byte** ppEnabledLayerNames;
+        public uint enabledExtensionCount;
+        public byte** ppEnabledExtensionNames;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct VkExtent2D
@@ -71,5 +97,25 @@ internal static unsafe partial class VulkanInterop
         public IntPtr pSwapchains;
         public IntPtr pImageIndices;
         public IntPtr pResults;
+    }
+
+    public static bool TryLoadVulkanLoader(out IntPtr libraryHandle)
+    {
+        ReadOnlySpan<string> candidates = OperatingSystem.IsWindows()
+            ? ["vulkan-1.dll"]
+            : OperatingSystem.IsMacOS()
+                ? ["libvulkan.1.dylib", "libMoltenVK.dylib"]
+                : ["libvulkan.so.1", "libvulkan.so"];
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            if (NativeLibrary.TryLoad(candidates[i], out libraryHandle))
+            {
+                return true;
+            }
+        }
+
+        libraryHandle = IntPtr.Zero;
+        return false;
     }
 }

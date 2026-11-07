@@ -4,11 +4,13 @@ using System;
 
 /// <summary>
 /// Factory for instantiating platform-native low-latency audio devices and lock-free streams.
+/// Falls back cleanly to <see cref="Simulated.SimulatedAudioDevice"/> when running in headless environments without audio hardware.
 /// </summary>
 public static class AudioFactory
 {
     /// <summary>
-    /// Creates the optimal hardware audio device for the current host operating system.
+    /// Creates the optimal hardware audio device for the current host operating system,
+    /// falling back to <see cref="Simulated.SimulatedAudioDevice"/> if no audio endpoint is available.
     /// </summary>
     public static IAudioDevice CreateDefaultDevice(int sampleRate = 48000, int channels = 2)
     {
@@ -23,20 +25,37 @@ public static class AudioFactory
                 return new Simulated.SimulatedAudioDevice(sampleRate, channels);
             }
         }
+
         if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
         {
-            return new CoreAudio.CoreAudioDevice(sampleRate, channels);
+            try
+            {
+                return new CoreAudio.CoreAudioDevice(sampleRate, channels);
+            }
+            catch
+            {
+                return new Simulated.SimulatedAudioDevice(sampleRate, channels);
+            }
         }
+
         if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid())
         {
-            return new Alsa.AlsaAudioDevice(sampleRate, channels);
+            try
+            {
+                return new Alsa.AlsaAudioDevice(sampleRate, channels);
+            }
+            catch
+            {
+                return new Simulated.SimulatedAudioDevice(sampleRate, channels);
+            }
         }
 
         return new Simulated.SimulatedAudioDevice(sampleRate, channels);
     }
 
     /// <summary>
-    /// Creates an ultra-low latency streaming channel backed by a lock-free SPSC ring buffer.
+    /// Creates a low-latency streaming channel backed by a lock-free SPSC ring buffer,
+    /// falling back to <see cref="Simulated.SimulatedAudioDevice"/> if no hardware audio endpoint is available.
     /// </summary>
     public static IAudioStream CreateStream(int sampleRate = 48000, int channels = 2, int bufferCapacity = 16384)
     {

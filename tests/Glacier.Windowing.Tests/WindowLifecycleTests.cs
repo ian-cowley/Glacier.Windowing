@@ -52,7 +52,7 @@ public class WindowLifecycleTests
         Assert.Equal(800, window.Size.Width);
         Assert.Equal(600, window.Size.Height);
         Assert.False(window.IsVisible);
-        Assert.NotEqual(IntPtr.Zero, window.NativeHandle);
+        Assert.Equal(IntPtr.Zero, window.NativeHandle);
 
         window.Title = "Updated Title";
         Assert.Equal("Updated Title", window.Title);

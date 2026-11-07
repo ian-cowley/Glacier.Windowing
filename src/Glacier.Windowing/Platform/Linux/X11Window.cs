@@ -2,7 +2,6 @@ namespace Glacier.Windowing.Platform.Linux;
 
 using System;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Glacier.Windowing.Swapchain;
 
 /// <summary>
@@ -18,13 +17,24 @@ public sealed class X11Window : IWindow
     private bool _isVisible;
     private bool _disposed;
 
+    public static bool IsSupported => OperatingSystem.IsLinux();
+
     public IntPtr NativeHandle => _window;
     public IntPtr DisplayHandle => _display;
 
     public WindowSize Size
     {
         get => _size;
-        set => _size = value;
+        set
+        {
+            if (_size == value) return;
+            _size = value;
+            if (_display != IntPtr.Zero && _window != IntPtr.Zero && value.Width > 0 && value.Height > 0)
+            {
+                LibX11.XResizeWindow(_display, _window, (uint)value.Width, (uint)value.Height);
+            }
+            Resized?.Invoke(value.Width, value.Height);
+        }
     }
 
     public string Title
@@ -66,6 +76,10 @@ public sealed class X11Window : IWindow
 
     public X11Window(WindowOptions options)
     {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("X11Window is only supported on Linux.");
+        }
         ArgumentNullException.ThrowIfNull(options);
 
         _title = options.Title;
@@ -74,61 +88,54 @@ public sealed class X11Window : IWindow
         try
         {
             _display = LibX11.XOpenDisplay(null);
-            if (_display == IntPtr.Zero)
-            {
-                // Headless environment without active X11 display server
-                _window = (IntPtr)0x1101;
-                IsVisible = options.IsVisible;
-                return;
-            }
-
-            IntPtr root = LibX11.XDefaultRootWindow(_display);
-            _window = LibX11.XCreateSimpleWindow(
-                _display,
-                root,
-                100, 100,
-                (uint)options.Width, (uint)options.Height,
-                0,
-                UIntPtr.Zero,
-                UIntPtr.Zero);
-
-            if (_window == IntPtr.Zero)
-            {
-                throw new InvalidOperationException("Failed to create X11 window handle.");
-            }
-
-            LibX11.XStoreName(_display, _window, options.Title);
-
-            IntPtr eventMask = (IntPtr)(
-                LibX11.ExposureMask |
-                LibX11.KeyPressMask |
-                LibX11.KeyReleaseMask |
-                LibX11.ButtonPressMask |
-                LibX11.ButtonReleaseMask |
-                LibX11.PointerMotionMask |
-                LibX11.StructureNotifyMask);
-
-            LibX11.XSelectInput(_display, _window, eventMask);
-
-            _wmDeleteWindow = LibX11.XInternAtom(_display, "WM_DELETE_WINDOW", false);
-            if (_wmDeleteWindow != IntPtr.Zero)
-            {
-                LibX11.XSetWMProtocols(_display, _window, [_wmDeleteWindow], 1);
-            }
-
-            IsVisible = options.IsVisible;
         }
-        catch (DllNotFoundException)
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
-            // libX11.so.6 not available on this platform
-            _display = IntPtr.Zero;
-            _window = (IntPtr)0x1101; // Mock handle for testing
+            throw new PlatformNotSupportedException("libX11.so.6 is not installed on this Linux host.", ex);
         }
-        catch (EntryPointNotFoundException)
+
+        if (_display == IntPtr.Zero)
         {
-            _display = IntPtr.Zero;
-            _window = (IntPtr)0x1101;
+            throw new InvalidOperationException("Failed to open X11 display connection (DISPLAY environment variable is unset or X server is unreachable).");
         }
+
+        IntPtr root = LibX11.XDefaultRootWindow(_display);
+        _window = LibX11.XCreateSimpleWindow(
+            _display,
+            root,
+            100, 100,
+            (uint)Math.Max(1, options.Width), (uint)Math.Max(1, options.Height),
+            0,
+            UIntPtr.Zero,
+            UIntPtr.Zero);
+
+        if (_window == IntPtr.Zero)
+        {
+            LibX11.XCloseDisplay(_display);
+            _display = IntPtr.Zero;
+            throw new InvalidOperationException("Failed to create native X11 window handle.");
+        }
+
+        LibX11.XStoreName(_display, _window, options.Title);
+
+        IntPtr eventMask = (IntPtr)(
+            LibX11.ExposureMask |
+            LibX11.KeyPressMask |
+            LibX11.KeyReleaseMask |
+            LibX11.ButtonPressMask |
+            LibX11.ButtonReleaseMask |
+            LibX11.PointerMotionMask |
+            LibX11.StructureNotifyMask);
+
+        LibX11.XSelectInput(_display, _window, eventMask);
+
+        _wmDeleteWindow = LibX11.XInternAtom(_display, "WM_DELETE_WINDOW", false);
+        if (_wmDeleteWindow != IntPtr.Zero)
+        {
+            LibX11.XSetWMProtocols(_display, _window, ref _wmDeleteWindow, 1);
+        }
+
+        IsVisible = options.IsVisible;
     }
 
     public void PollEvents()
@@ -167,17 +174,44 @@ public sealed class X11Window : IWindow
                     break;
 
                 case LibX11.ButtonPress:
-                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseDown, (int)ev.xbutton.button, ev.xbutton.x, ev.xbutton.y, nowNs));
+                    if (ev.xbutton.button == 4)
+                    {
+                        InputReceived?.Invoke(new InputEvent(InputEventType.MouseWheel, 0, ev.xbutton.x, 120f, nowNs));
+                    }
+                    else if (ev.xbutton.button == 5)
+                    {
+                        InputReceived?.Invoke(new InputEvent(InputEventType.MouseWheel, 0, ev.xbutton.x, -120f, nowNs));
+                    }
+                    else if (MapX11MouseButton(ev.xbutton.button, out int btnDown))
+                    {
+                        InputReceived?.Invoke(new InputEvent(InputEventType.MouseDown, btnDown, ev.xbutton.x, ev.xbutton.y, nowNs));
+                    }
                     break;
 
                 case LibX11.ButtonRelease:
-                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseUp, (int)ev.xbutton.button, ev.xbutton.x, ev.xbutton.y, nowNs));
+                    if (MapX11MouseButton(ev.xbutton.button, out int btnUp))
+                    {
+                        InputReceived?.Invoke(new InputEvent(InputEventType.MouseUp, btnUp, ev.xbutton.x, ev.xbutton.y, nowNs));
+                    }
                     break;
 
                 case LibX11.MotionNotify:
                     InputReceived?.Invoke(new InputEvent(InputEventType.MouseMove, 0, ev.xmotion.x, ev.xmotion.y, nowNs));
                     break;
             }
+        }
+    }
+
+    private static bool MapX11MouseButton(uint x11Button, out int buttonIndex)
+    {
+        switch (x11Button)
+        {
+            case 1: buttonIndex = 0; return true; // Left
+            case 2: buttonIndex = 2; return true; // Middle
+            case 3: buttonIndex = 1; return true; // Right
+            case 8: buttonIndex = 3; return true; // XButton1
+            case 9: buttonIndex = 4; return true; // XButton2
+            default: buttonIndex = 0; return false;
         }
     }
 

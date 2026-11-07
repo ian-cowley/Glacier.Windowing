@@ -1,11 +1,11 @@
 namespace Glacier.Windowing.Platform.Mobile;
 
 using System;
-using System.Diagnostics;
 using Glacier.Windowing.Swapchain;
 
 /// <summary>
 /// iOS UIKit Surface HAL implementation managing UIWindow, CAMetalLayer, and 120Hz ProMotion display link.
+/// <see cref="NativeHandle"/> and <see cref="MetalLayer"/> remain <see cref="IntPtr.Zero"/> until native UIKit handles are bound via <see cref="AttachHandles"/>.
 /// </summary>
 public sealed class IosUiWindow : IWindow
 {
@@ -26,6 +26,7 @@ public sealed class IosUiWindow : IWindow
         get => _size;
         set
         {
+            if (_size == value) return;
             _size = value;
             Resized?.Invoke(value.Width, value.Height);
         }
@@ -54,8 +55,23 @@ public sealed class IosUiWindow : IWindow
         _title = options.Title;
         _size = new WindowSize(options.Width, options.Height);
         _isVisible = options.IsVisible;
-        _uiWindow = new IntPtr(0x105001); // Mock handle
-        _metalLayer = new IntPtr(0x105002);
+        _uiWindow = IntPtr.Zero;
+        _metalLayer = IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Attaches native Objective-C <c>UIWindow</c> and <c>CAMetalLayer</c> pointers provided by the iOS host scene delegate.
+    /// </summary>
+    public void AttachHandles(IntPtr uiWindow, IntPtr metalLayer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if ((uiWindow != IntPtr.Zero || metalLayer != IntPtr.Zero) && !OperatingSystem.IsIOS())
+        {
+            throw new PlatformNotSupportedException("Attaching UIWindow / CAMetalLayer pointers requires the iOS runtime.");
+        }
+
+        _uiWindow = uiWindow;
+        _metalLayer = metalLayer;
     }
 
     /// <summary>
@@ -63,6 +79,7 @@ public sealed class IosUiWindow : IWindow
     /// </summary>
     public void SetPreferredFramesPerSecond(int fps)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fps);
         _displayRefreshRate = fps;
     }
 

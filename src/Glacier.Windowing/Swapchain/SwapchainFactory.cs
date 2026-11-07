@@ -1,23 +1,26 @@
 namespace Glacier.Windowing.Swapchain;
 
 using System;
-using Glacier.Windowing.Platform;
+using Glacier.Windowing.Platform.Mac;
+using Glacier.Windowing.Platform.Mobile;
 
 /// <summary>
-/// Factory for selecting and constructing hardware swapchains matching the target platform and window.
+/// Factory for selecting and constructing presentation swapchains matching the target platform and window.
 /// </summary>
 public static class SwapchainFactory
 {
     /// <summary>
-    /// Creates a hardware swapchain bound to the specified window.
+    /// Creates a swapchain bound to the specified window.
+    /// When <paramref name="backend"/> is <see cref="SwapchainBackend.Auto"/>, attempts the platform's primary GPU swapchain
+    /// and cleanly falls back to <see cref="Software.SoftwareSwapchain"/> in headless or non-accelerated environments.
     /// </summary>
     public static ISwapchain Create(IWindow window, SwapchainDescription desc, SwapchainBackend backend = SwapchainBackend.Auto)
     {
         ArgumentNullException.ThrowIfNull(window);
 
-        if (window is Platform.Headless.HeadlessWindow || backend == SwapchainBackend.Software)
+        if (backend == SwapchainBackend.Software)
         {
-            return new Software.SoftwareSwapchain(desc);
+            return new Software.SoftwareSwapchain(desc, window);
         }
 
         switch (backend)
@@ -29,10 +32,21 @@ public static class SwapchainFactory
                 return new Vulkan.VulkanSwapchain(window.NativeHandle, desc);
 
             case SwapchainBackend.Metal:
-                return new Metal.MetalSwapchain(window.NativeHandle, desc);
+                IntPtr metalTarget = window switch
+                {
+                    CocoaWindow cw when cw.MetalLayer != IntPtr.Zero => cw.MetalLayer,
+                    IosUiWindow iw when iw.MetalLayer != IntPtr.Zero => iw.MetalLayer,
+                    _ => window.NativeHandle
+                };
+                return new Metal.MetalSwapchain(metalTarget, desc);
 
             case SwapchainBackend.Auto:
             default:
+                if (window is Platform.Headless.HeadlessWindow || window.NativeHandle == IntPtr.Zero)
+                {
+                    return new Software.SoftwareSwapchain(desc, window);
+                }
+
                 if (OperatingSystem.IsWindows())
                 {
                     try
@@ -41,18 +55,44 @@ public static class SwapchainFactory
                     }
                     catch
                     {
-                        return new Vulkan.VulkanSwapchain(window.NativeHandle, desc);
+                        return new Software.SoftwareSwapchain(desc, window);
                     }
                 }
+
                 if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
                 {
-                    return new Metal.MetalSwapchain(window.NativeHandle, desc);
+                    try
+                    {
+                        IntPtr layer = window switch
+                        {
+                            CocoaWindow cw when cw.MetalLayer != IntPtr.Zero => cw.MetalLayer,
+                            IosUiWindow iw when iw.MetalLayer != IntPtr.Zero => iw.MetalLayer,
+                            _ => window.NativeHandle
+                        };
+                        if (layer != IntPtr.Zero)
+                        {
+                            return new Metal.MetalSwapchain(layer, desc);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    return new Software.SoftwareSwapchain(desc, window);
                 }
+
                 if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid())
                 {
-                    return new Vulkan.VulkanSwapchain(window.NativeHandle, desc);
+                    try
+                    {
+                        return new Vulkan.VulkanSwapchain(window.NativeHandle, desc);
+                    }
+                    catch
+                    {
+                        return new Software.SoftwareSwapchain(desc, window);
+                    }
                 }
-                return new Software.SoftwareSwapchain(desc);
+
+                return new Software.SoftwareSwapchain(desc, window);
         }
     }
 }

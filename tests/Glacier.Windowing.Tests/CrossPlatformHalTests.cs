@@ -1,7 +1,7 @@
 namespace Glacier.Windowing.Tests;
 
 using System;
-using System.Text;
+using System.Collections.Generic;
 using Glacier.Windowing.Platform.Linux;
 using Glacier.Windowing.Platform.Mac;
 using Glacier.Windowing.Platform.Mobile;
@@ -43,9 +43,17 @@ public class CrossPlatformHalTests
     }
 
     [Fact]
-    public void AndroidNativeWindow_TouchDispatch_TranslatesToInputEvents()
+    public void AndroidNativeWindow_TouchDispatchAndZeroInitialHandle_FunctionsCorrectly()
     {
         using var window = new AndroidNativeWindow(new WindowOptions { Width = 1080, Height = 2400 });
+        Assert.Equal(IntPtr.Zero, window.NativeHandle);
+        Assert.False(window.IsSurfaceAttached);
+
+        if (!OperatingSystem.IsAndroid())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => window.AttachSurface(new IntPtr(1)));
+        }
+
         var events = new List<InputEvent>();
         window.InputReceived += evt => events.Add(evt);
 
@@ -68,10 +76,17 @@ public class CrossPlatformHalTests
     }
 
     [Fact]
-    public void IosUiWindow_ProMotionAndTouch_FunctionsCorrectly()
+    public void IosUiWindow_ProMotionAndTouch_ZeroFakeHandles()
     {
         using var window = new IosUiWindow(new WindowOptions { Width = 1179, Height = 2556 });
+        Assert.Equal(IntPtr.Zero, window.NativeHandle);
+        Assert.Equal(IntPtr.Zero, window.MetalLayer);
         Assert.Equal(120.0, window.DisplayRefreshRate);
+
+        if (!OperatingSystem.IsIOS())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => window.AttachHandles(new IntPtr(1), new IntPtr(2)));
+        }
 
         window.SetPreferredFramesPerSecond(60);
         Assert.Equal(60.0, window.DisplayRefreshRate);
@@ -91,16 +106,23 @@ public class CrossPlatformHalTests
     }
 
     [Fact]
-    public void X11AndCocoaWindows_CreationAndDisposal_Succeeds()
+    public void PlatformSpecificDesktopWindows_EnforceHostOperatingSystem()
     {
-        using var x11 = new X11Window(new WindowOptions { Width = 800, Height = 600 });
-        Assert.NotNull(x11);
-        Assert.Equal(800, x11.Size.Width);
-        Assert.Equal(600, x11.Size.Height);
+        var opts = new WindowOptions { Width = 800, Height = 600, IsVisible = false };
 
-        using var cocoa = new CocoaWindow(new WindowOptions { Width = 1024, Height = 768 });
-        Assert.NotNull(cocoa);
-        Assert.Equal(1024, cocoa.Size.Width);
-        Assert.Equal(768, cocoa.Size.Height);
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new X11Window(opts));
+            Assert.Throws<PlatformNotSupportedException>(() => new WaylandWindow(opts));
+        }
+        else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            Assert.ThrowsAny<Exception>(() => new X11Window(opts));
+        }
+
+        if (!OperatingSystem.IsMacOS())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new CocoaWindow(opts));
+        }
     }
 }

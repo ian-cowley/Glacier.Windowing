@@ -41,6 +41,8 @@ internal static unsafe partial class User32
     public const uint WM_MBUTTONDOWN = 0x0207;
     public const uint WM_MBUTTONUP = 0x0208;
     public const uint WM_MOUSEWHEEL = 0x020A;
+    public const uint WM_XBUTTONDOWN = 0x020B;
+    public const uint WM_XBUTTONUP = 0x020C;
     public const uint WM_DPICHANGED = 0x02E0;
 
     public const uint RID_INPUT = 0x10000003;
@@ -52,6 +54,16 @@ internal static unsafe partial class User32
     public const uint RIM_TYPEMOUSE = 0;
     public const uint RIM_TYPEKEYBOARD = 1;
     public const uint RIM_TYPEHID = 2;
+
+    public const ushort MOUSE_MOVE_ABSOLUTE = 0x0001;
+    public const ushort MOUSE_VIRTUAL_DESKTOP = 0x0002;
+
+    public const int SM_CXSCREEN = 0;
+    public const int SM_CYSCREEN = 1;
+    public const int SM_XVIRTUALSCREEN = 76;
+    public const int SM_YVIRTUALSCREEN = 77;
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
 
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 
@@ -190,6 +202,14 @@ internal static unsafe partial class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyWindow(IntPtr hWnd);
 
+    [DllImport(DllName)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport(DllName, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
     [DllImport(DllName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -215,6 +235,23 @@ internal static unsafe partial class User32
     [DllImport(DllName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport(DllName, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport(DllName, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport(DllName)]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport(DllName)]
+    public static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport(DllName)]
+    public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
     [DllImport(DllName, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

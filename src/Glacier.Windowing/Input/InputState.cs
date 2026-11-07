@@ -41,6 +41,10 @@ public sealed class InputState : IInputReceiver
                 Mouse.SetPosition(evt.X, evt.Y);
                 break;
 
+            case InputEventType.MouseDelta:
+                Mouse.AddDelta(evt.X, evt.Y);
+                break;
+
             case InputEventType.MouseDown:
                 Mouse.SetButton(evt.KeyOrButton, true);
                 break;
@@ -56,7 +60,11 @@ public sealed class InputState : IInputReceiver
             case InputEventType.TouchStart:
             case InputEventType.TouchMove:
             case InputEventType.TouchEnd:
-                // Touch events can be translated into cursor/touch models
+                Mouse.SetPosition(evt.X, evt.Y);
+                if (evt.Type != InputEventType.TouchMove)
+                {
+                    Mouse.SetButton(0, evt.Type == InputEventType.TouchStart);
+                }
                 break;
         }
     }

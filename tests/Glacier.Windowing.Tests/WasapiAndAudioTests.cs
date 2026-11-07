@@ -2,6 +2,8 @@ namespace Glacier.Windowing.Tests;
 
 using System;
 using Glacier.Windowing.Audio;
+using Glacier.Windowing.Audio.Alsa;
+using Glacier.Windowing.Audio.CoreAudio;
 using Glacier.Windowing.Audio.Simulated;
 using Glacier.Windowing.Audio.Wasapi;
 using Xunit;
@@ -36,7 +38,7 @@ public class WasapiAndAudioTests
         Assert.Equal(128, audio.AvailableRead);
 
         int remainder = audio.Drain(200);
-        Assert.Equal(128, remainder); // Only 128 left
+        Assert.Equal(128, remainder);
         Assert.Equal(256, audio.TotalSamplesPlayed);
         Assert.Equal(0, audio.AvailableRead);
 
@@ -67,35 +69,56 @@ public class WasapiAndAudioTests
     }
 
     [Fact]
-    public void AudioFactory_CreateDefaultDevice_ReturnsValidInstance()
+    public void AudioFactory_CreateDefaultDeviceAndStream_ReturnsValidInstanceOnAnyHost()
     {
         using var device = AudioFactory.CreateDefaultDevice(48000, 2);
         Assert.NotNull(device);
         Assert.Equal(48000, device.SampleRate);
         Assert.Equal(2, device.Channels);
-
-        // Can play audio without throwing
-        device.Play(new float[64]);
         device.SetMasterVolume(0.5f);
+        device.Play(new float[64]);
+
+        using var stream = AudioFactory.CreateStream(48000, 2, 4096);
+        Assert.NotNull(stream);
+        Assert.Equal(48000, stream.SampleRate);
+        Assert.Equal(2, stream.Channels);
+        stream.Start();
+        Assert.True(stream.Write(new float[64]));
+        stream.Stop();
     }
 
     [Fact]
-    public void WasapiAudioStream_LifecycleAndBufferOperations_WorkCleanly()
+    public void NativeAudioBackends_EnforcePlatformAndHardwareAvailability()
     {
-        using var stream = new WasapiAudioStream(48000, 2, 4096);
-        Assert.Equal(48000, stream.SampleRate);
-        Assert.Equal(2, stream.Channels);
-        Assert.Equal(4096, stream.BufferCapacity);
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new WasapiAudioStream(48000, 2, 4096));
+            Assert.Throws<PlatformNotSupportedException>(() => new WasapiAudioDevice(48000, 2));
+        }
+        else if (WasapiAudioStream.IsSupported)
+        {
+            using var stream = new WasapiAudioStream(48000, 2, 4096);
+            Assert.Equal(48000, stream.SampleRate);
+            Assert.Equal(2, stream.Channels);
+            Assert.Equal(4096, stream.BufferCapacity);
+            stream.Volume = 0.0f; // Mute during automated test run
+            stream.Start();
+            Assert.True(stream.Write(new float[128]));
+            stream.Stop();
+        }
+        else
+        {
+            Assert.Throws<InvalidOperationException>(() => new WasapiAudioStream(48000, 2, 4096));
+        }
 
-        stream.Start();
+        if (!AlsaAudioDevice.IsSupported)
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new AlsaAudioDevice(48000, 2));
+        }
 
-        float[] samples = new float[128];
-        bool written = stream.Write(samples);
-        Assert.True(written);
-
-        stream.Volume = 0.5f;
-        Assert.Equal(0.5f, stream.Volume);
-
-        stream.Stop();
+        if (!CoreAudioDevice.IsSupported)
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new CoreAudioDevice(48000, 2));
+        }
     }
 }

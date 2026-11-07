@@ -6,16 +6,18 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>preview</LangVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsAotCompatible>true</IsAotCompatible>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <TieredPGO>true</TieredPGO>
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <NoWarn>$(NoWarn);CS1591;CS8981</NoWarn>
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Windowing</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
-    <Description>Pure C# .NET 10 Cross-Platform Windowing, Hardware Swapchain (D3D12/Vulkan/Metal), Low-Latency Audio (WASAPI/ALSA/CoreAudio), and Mobile Surface HAL. Zero third-party native dependencies.</Description>
+    <Description>Pure C# .NET 10 Cross-Platform Windowing, Presentation Swapchain HAL, Low-Latency Audio (WASAPI/ALSA/CoreAudio), and Mobile Surface HAL. Zero third-party native dependencies.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Windowing</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ian-cowley/Glacier.Windowing.git</RepositoryUrl>

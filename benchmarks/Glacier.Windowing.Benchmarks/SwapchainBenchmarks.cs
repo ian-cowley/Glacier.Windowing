@@ -1,40 +1,43 @@
 namespace Glacier.Windowing.Benchmarks;
 
 using BenchmarkDotNet.Attributes;
+using Glacier.Windowing.Platform;
 using Glacier.Windowing.Swapchain;
-using Glacier.Windowing.Swapchain.D3D12;
-using Glacier.Windowing.Swapchain.Vulkan;
+using Glacier.Windowing.Swapchain.Software;
 
 [MemoryDiagnoser]
 public class SwapchainBenchmarks
 {
-    private D3D12Swapchain _d3d12 = null!;
-    private VulkanSwapchain _vulkan = null!;
+    private IWindow _window = null!;
+    private ISwapchain _primarySwapchain = null!;
+    private SoftwareSwapchain _softwareSwapchain = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         var desc = new SwapchainDescription(1920, 1080, BufferCount: 3);
-        _d3d12 = new D3D12Swapchain(new IntPtr(0x1000), desc);
-        _vulkan = new VulkanSwapchain(new IntPtr(0x2000), desc);
+        _window = WindowFactory.CreateWindow(new WindowOptions { Width = 1920, Height = 1080, IsVisible = false });
+        _primarySwapchain = SwapchainFactory.Create(_window, desc);
+        _softwareSwapchain = new SoftwareSwapchain(desc);
     }
 
     [Benchmark(Baseline = true)]
-    public void D3D12FlipPresent()
+    public void PlatformAutoPresent()
     {
-        _d3d12.Present(vsync: false);
+        _primarySwapchain.Present(vsync: false);
     }
 
     [Benchmark]
-    public void VulkanMailboxPresent()
+    public void SoftwareSwapchainPresent()
     {
-        _vulkan.Present(vsync: false);
+        _softwareSwapchain.Present(vsync: false);
     }
 
     [GlobalCleanup]
     public void Cleanup()
     {
-        _d3d12.Dispose();
-        _vulkan.Dispose();
+        _softwareSwapchain.Dispose();
+        _primarySwapchain.Dispose();
+        _window.Dispose();
     }
 }

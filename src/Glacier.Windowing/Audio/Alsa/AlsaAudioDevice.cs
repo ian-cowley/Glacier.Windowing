@@ -1,6 +1,7 @@
 namespace Glacier.Windowing.Audio.Alsa;
 
 using System;
+using System.Buffers;
 using System.Runtime.InteropServices;
 
 internal static unsafe partial class LibAsound
@@ -19,6 +20,9 @@ internal static unsafe partial class LibAsound
     public static extern int snd_pcm_close(IntPtr pcm);
 
     [DllImport(AsoundDll)]
+    public static extern int snd_pcm_recover(IntPtr pcm, int err, int silent);
+
+    [DllImport(AsoundDll)]
     public static extern int snd_pcm_set_params(
         IntPtr pcm,
         int format,
@@ -33,9 +37,9 @@ internal static unsafe partial class LibAsound
 }
 
 /// <summary>
-/// Linux ALSA PCM audio output device interfacing with libasound.so.2.
+/// Linux ALSA PCM audio output device interfacing directly with <c>libasound.so.2</c>.
 /// </summary>
-public sealed class AlsaAudioDevice : IAudioDevice
+public sealed unsafe class AlsaAudioDevice : IAudioDevice
 {
     private IntPtr _pcmHandle;
     private readonly int _sampleRate;
@@ -43,28 +47,53 @@ public sealed class AlsaAudioDevice : IAudioDevice
     private float _volume = 1.0f;
     private bool _disposed;
 
+    public static bool IsSupported => OperatingSystem.IsLinux() || OperatingSystem.IsAndroid();
+
     public int SampleRate => _sampleRate;
     public int Channels => _channels;
 
     public AlsaAudioDevice(int sampleRate = 48000, int channels = 2)
     {
+        if (!IsSupported)
+        {
+            throw new PlatformNotSupportedException("AlsaAudioDevice is only supported on Linux and Android.");
+        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sampleRate);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(channels);
+
         _sampleRate = sampleRate;
         _channels = channels;
 
+        int err;
         try
         {
-            if (OperatingSystem.IsLinux())
-            {
-                int err = LibAsound.snd_pcm_open(out _pcmHandle, "default", LibAsound.SND_PCM_STREAM_PLAYBACK, LibAsound.SND_PCM_NONBLOCK);
-                if (err == 0 && _pcmHandle != IntPtr.Zero)
-                {
-                    LibAsound.snd_pcm_set_params(_pcmHandle, LibAsound.SND_PCM_FORMAT_FLOAT_LE, LibAsound.SND_PCM_ACCESS_RW_INTERLEAVED, (uint)channels, (uint)sampleRate, 1, 10000);
-                }
-            }
+            err = LibAsound.snd_pcm_open(out _pcmHandle, "default", LibAsound.SND_PCM_STREAM_PLAYBACK, LibAsound.SND_PCM_NONBLOCK);
         }
-        catch
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            throw new PlatformNotSupportedException("libasound.so.2 is not installed on this Linux host.", ex);
+        }
+
+        if (err < 0 || _pcmHandle == IntPtr.Zero)
         {
             _pcmHandle = IntPtr.Zero;
+            throw new InvalidOperationException($"Failed to open ALSA default playback PCM device (error {err}).");
+        }
+
+        int paramErr = LibAsound.snd_pcm_set_params(
+            _pcmHandle,
+            LibAsound.SND_PCM_FORMAT_FLOAT_LE,
+            LibAsound.SND_PCM_ACCESS_RW_INTERLEAVED,
+            (uint)channels,
+            (uint)sampleRate,
+            1,
+            20_000);
+
+        if (paramErr < 0)
+        {
+            LibAsound.snd_pcm_close(_pcmHandle);
+            _pcmHandle = IntPtr.Zero;
+            throw new InvalidOperationException($"Failed to configure ALSA PCM parameters (error {paramErr}).");
         }
     }
 
@@ -72,17 +101,59 @@ public sealed class AlsaAudioDevice : IAudioDevice
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (_pcmHandle == IntPtr.Zero || !OperatingSystem.IsLinux() || pcmSamples.IsEmpty)
+        if (_pcmHandle == IntPtr.Zero || pcmSamples.IsEmpty)
         {
             return;
         }
 
-        unsafe
+        int frames = pcmSamples.Length / _channels;
+        if (frames <= 0)
+        {
+            return;
+        }
+
+        int count = frames * _channels;
+        float vol = _volume;
+
+        if (vol >= 0.9999f)
         {
             fixed (float* ptr = pcmSamples)
             {
-                UIntPtr frames = (UIntPtr)(pcmSamples.Length / _channels);
-                LibAsound.snd_pcm_writei(_pcmHandle, ptr, frames);
+                long written = LibAsound.snd_pcm_writei(_pcmHandle, ptr, (UIntPtr)frames).ToInt64();
+                if (written < 0)
+                {
+                    LibAsound.snd_pcm_recover(_pcmHandle, (int)written, 1);
+                }
+            }
+            return;
+        }
+
+        float[]? rented = null;
+        Span<float> scaled = count <= 1024
+            ? stackalloc float[count]
+            : (rented = ArrayPool<float>.Shared.Rent(count)).AsSpan(0, count);
+
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                scaled[i] = pcmSamples[i] * vol;
+            }
+
+            fixed (float* ptr = scaled)
+            {
+                long written = LibAsound.snd_pcm_writei(_pcmHandle, ptr, (UIntPtr)frames).ToInt64();
+                if (written < 0)
+                {
+                    LibAsound.snd_pcm_recover(_pcmHandle, (int)written, 1);
+                }
+            }
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<float>.Shared.Return(rented);
             }
         }
     }
@@ -98,7 +169,7 @@ public sealed class AlsaAudioDevice : IAudioDevice
         if (_disposed) return;
         _disposed = true;
 
-        if (_pcmHandle != IntPtr.Zero && OperatingSystem.IsLinux())
+        if (_pcmHandle != IntPtr.Zero)
         {
             try { LibAsound.snd_pcm_close(_pcmHandle); } catch { }
             _pcmHandle = IntPtr.Zero;

@@ -2,11 +2,14 @@ namespace Glacier.Windowing.Swapchain.D3D12;
 
 using System;
 using System.Runtime.InteropServices;
+using Glacier.Windowing.Platform.Win32;
 
 /// <summary>
-/// Direct3D 12 Flip Model hardware presentation swapchain implementing IDXGISwapChain3/4 semantics.
+/// Windows Direct3D 12 / DXGI presentation swapchain probing hardware DXGI 1.5 tearing capabilities,
+/// managing real 64-byte-aligned staging backbuffers, Win32 waitable frame latency synchronization,
+/// and directHWND presentation when no external <c>ID3D12CommandQueue</c> is bound.
 /// </summary>
-public sealed class D3D12Swapchain : ISwapchain
+public sealed unsafe class D3D12Swapchain : ISwapchain
 {
     private readonly SwapchainDescription _description;
     private readonly IntPtr _hwnd;
@@ -14,16 +17,23 @@ public sealed class D3D12Swapchain : ISwapchain
     private int _height;
     private int _currentBufferIndex;
     private readonly IntPtr[] _backBuffers;
+    private IntPtr _bgraScratch;
+    private nuint _bufferByteSize;
     private bool _tearingSupported;
+    private bool _hardwareDeviceAvailable;
     private IntPtr _waitableObject;
     private bool _disposed;
     private ulong _presentCount;
 
+    public static bool IsSupported => OperatingSystem.IsWindows();
+
     public int Width => _width;
     public int Height => _height;
-    public int BufferCount => _description.BufferCount;
+    public int BufferCount => _backBuffers.Length;
+    public nuint BufferByteSize => _bufferByteSize;
     public bool IsHdrEnabled => _description.EnableHdr;
     public bool IsTearingSupported => _tearingSupported;
+    public bool IsHardwareDeviceAvailable => _hardwareDeviceAvailable;
     public IntPtr WaitableObject => _waitableObject;
     public ulong PresentCount => _presentCount;
 
@@ -38,9 +48,13 @@ public sealed class D3D12Swapchain : ISwapchain
 
     public D3D12Swapchain(IntPtr hwnd, SwapchainDescription desc)
     {
-        if (hwnd == IntPtr.Zero)
+        if (!OperatingSystem.IsWindows())
         {
-            throw new ArgumentException("Invalid window handle.", nameof(hwnd));
+            throw new PlatformNotSupportedException("D3D12Swapchain is only supported on Windows.");
+        }
+        if (hwnd == IntPtr.Zero || !User32.IsWindow(hwnd))
+        {
+            throw new ArgumentException("A valid native Win32 HWND is required to create a D3D12Swapchain.", nameof(hwnd));
         }
         if (desc.Width <= 0 || desc.Height <= 0)
         {
@@ -52,56 +66,115 @@ public sealed class D3D12Swapchain : ISwapchain
         _width = desc.Width;
         _height = desc.Height;
 
+        InitializeDxgiAndD3D12();
+
         int bufferCount = Math.Max(2, desc.BufferCount);
         _backBuffers = new IntPtr[bufferCount];
+        AllocateBackBuffers(_width, _height);
 
-        for (int i = 0; i < bufferCount; i++)
+        if (_description.LowLatencyWaitable)
         {
-            _backBuffers[i] = new IntPtr(0xD3D12000 + i);
-        }
-
-        InitializeDxgi();
-    }
-
-    private void InitializeDxgi()
-    {
-        if (!OperatingSystem.IsWindows()) return;
-
-        try
-        {
-            int hr = DxgiInterop.CreateDXGIFactory2(0, DxgiInterop.IID_IDXGIFactory4, out IntPtr factory);
-            if (hr == 0 && factory != IntPtr.Zero)
+            _waitableObject = Kernel32.CreateEventW(IntPtr.Zero, bManualReset: false, bInitialState: true, lpName: null);
+            if (_waitableObject == IntPtr.Zero)
             {
-                _tearingSupported = true;
-                if (_description.LowLatencyWaitable)
-                {
-                    _waitableObject = new IntPtr(0xCAFEBABE);
-                }
-                Marshal.Release(factory);
+                FreeBuffers();
+                throw new InvalidOperationException($"Failed to create Win32 frame-latency waitable event (error {Marshal.GetLastWin32Error()}).");
             }
         }
-        catch
+    }
+
+    private void InitializeDxgiAndD3D12()
+    {
+        int hrFactory = DxgiInterop.CreateDXGIFactory2(0, in DxgiInterop.IID_IDXGIFactory5, out IntPtr factory5);
+        if (hrFactory < 0 || factory5 == IntPtr.Zero)
         {
-            // Fallback for software / headless / container environments
-            _tearingSupported = false;
+            hrFactory = DxgiInterop.CreateDXGIFactory2(0, in DxgiInterop.IID_IDXGIFactory4, out IntPtr factory4);
+            if (hrFactory < 0 || factory4 == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"DXGI 1.4+ factory creation failed with HRESULT 0x{hrFactory:X8}.");
+            }
+            Marshal.Release(factory4);
         }
+        else
+        {
+            try
+            {
+                // IDXGIFactory5::CheckFeatureSupport is vtable slot 28
+                void** vtbl = *(void***)factory5;
+                var checkFeatureSupport = (delegate* unmanaged[Stdcall]<IntPtr, uint, void*, uint, int>)vtbl[28];
+                int allowTearing = 0;
+                int hrTear = checkFeatureSupport(factory5, DxgiInterop.DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(int));
+                _tearingSupported = hrTear >= 0 && allowTearing != 0;
+            }
+            finally
+            {
+                Marshal.Release(factory5);
+            }
+        }
+
+        int hrDevice = D3D12Interop.D3D12CreateDevice(
+            IntPtr.Zero,
+            D3D12Interop.D3D_FEATURE_LEVEL_11_0,
+            in DxgiInterop.IID_ID3D12Device,
+            out IntPtr d3d12Device);
+
+        if (hrDevice >= 0 && d3d12Device != IntPtr.Zero)
+        {
+            _hardwareDeviceAvailable = true;
+            Marshal.Release(d3d12Device);
+        }
+        else
+        {
+            throw new InvalidOperationException($"Direct3D 12 hardware device creation failed with HRESULT 0x{hrDevice:X8}.");
+        }
+    }
+
+    private void AllocateBackBuffers(int width, int height)
+    {
+        nuint bytesPerPixel = _description.EnableHdr ? 8u : 4u;
+        nuint byteSize = checked((nuint)width * (nuint)height * bytesPerPixel);
+        _bufferByteSize = byteSize;
+
+        for (int i = 0; i < _backBuffers.Length; i++)
+        {
+            if (_backBuffers[i] != IntPtr.Zero)
+            {
+                NativeMemory.AlignedFree((void*)_backBuffers[i]);
+            }
+            void* ptr = NativeMemory.AlignedAlloc(byteSize, 64);
+            NativeMemory.Clear(ptr, byteSize);
+            _backBuffers[i] = (IntPtr)ptr;
+        }
+
+        if (_bgraScratch != IntPtr.Zero)
+        {
+            NativeMemory.AlignedFree((void*)_bgraScratch);
+        }
+        nuint sdrBytes = checked((nuint)width * (nuint)height * 4u);
+        _bgraScratch = (IntPtr)NativeMemory.AlignedAlloc(sdrBytes, 64);
     }
 
     public void Present(bool vsync = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        uint syncInterval = vsync ? 1u : 0u;
-        uint presentFlags = 0;
-
-        if (!vsync && _tearingSupported)
+        if (!_description.EnableHdr && _bgraScratch != IntPtr.Zero)
         {
-            presentFlags |= DxgiInterop.DXGI_PRESENT_ALLOW_TEARING;
+            Gdi32.PresentRgbaToHwnd(_hwnd, (void*)_backBuffers[_currentBufferIndex], (void*)_bgraScratch, _width, _height);
         }
 
-        // Advance to next buffer in DXGI Flip Model queue
+        if (vsync)
+        {
+            Dwmapi.DwmFlush();
+        }
+
         _currentBufferIndex = (_currentBufferIndex + 1) % _backBuffers.Length;
         _presentCount++;
+
+        if (_waitableObject != IntPtr.Zero)
+        {
+            Kernel32.SetEvent(_waitableObject);
+        }
     }
 
     public void Resize(int width, int height)
@@ -115,7 +188,26 @@ public sealed class D3D12Swapchain : ISwapchain
 
         _width = width;
         _height = height;
+        AllocateBackBuffers(width, height);
         _currentBufferIndex = 0;
+    }
+
+    private void FreeBuffers()
+    {
+        for (int i = 0; i < _backBuffers.Length; i++)
+        {
+            if (_backBuffers[i] != IntPtr.Zero)
+            {
+                NativeMemory.AlignedFree((void*)_backBuffers[i]);
+                _backBuffers[i] = IntPtr.Zero;
+            }
+        }
+
+        if (_bgraScratch != IntPtr.Zero)
+        {
+            NativeMemory.AlignedFree((void*)_bgraScratch);
+            _bgraScratch = IntPtr.Zero;
+        }
     }
 
     public void Dispose()
@@ -123,12 +215,14 @@ public sealed class D3D12Swapchain : ISwapchain
         if (_disposed) return;
         _disposed = true;
 
-        for (int i = 0; i < _backBuffers.Length; i++)
+        FreeBuffers();
+
+        if (_waitableObject != IntPtr.Zero)
         {
-            _backBuffers[i] = IntPtr.Zero;
+            Kernel32.CloseHandle(_waitableObject);
+            _waitableObject = IntPtr.Zero;
         }
 
-        _waitableObject = IntPtr.Zero;
         GC.SuppressFinalize(this);
     }
 }

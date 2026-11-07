@@ -2,11 +2,11 @@ namespace Glacier.Windowing.Platform.Headless;
 
 using System;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using Glacier.Windowing.Swapchain;
 
 /// <summary>
 /// Fully functional virtual window implementation for headless servers, background renderers, and automated unit tests.
+/// Because no operating system window exists, <see cref="NativeHandle"/> is <see cref="IntPtr.Zero"/>.
 /// </summary>
 public sealed class HeadlessWindow : IWindow
 {
@@ -16,7 +16,7 @@ public sealed class HeadlessWindow : IWindow
     private bool _isVisible;
     private bool _disposed;
 
-    public IntPtr NativeHandle { get; }
+    public IntPtr NativeHandle => IntPtr.Zero;
 
     public WindowSize Size
     {
@@ -52,7 +52,6 @@ public sealed class HeadlessWindow : IWindow
         _title = options.Title;
         _size = new WindowSize(options.Width, options.Height);
         _isVisible = options.IsVisible;
-        NativeHandle = new IntPtr(0xDEADBEEF);
     }
 
     /// <summary>

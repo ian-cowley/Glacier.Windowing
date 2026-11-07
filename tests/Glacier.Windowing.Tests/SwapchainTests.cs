@@ -1,7 +1,9 @@
 namespace Glacier.Windowing.Tests;
 
 using System;
+using Glacier.Windowing.Platform;
 using Glacier.Windowing.Platform.Headless;
+using Glacier.Windowing.Platform.Win32;
 using Glacier.Windowing.Swapchain;
 using Glacier.Windowing.Swapchain.D3D12;
 using Glacier.Windowing.Swapchain.Metal;
@@ -30,20 +32,43 @@ public class SwapchainTests
     }
 
     [Fact]
-    public void D3D12Swapchain_BufferCyclingAndPresent_AdvancesFlipQueue()
+    public unsafe void D3D12Swapchain_PlatformGatingAndRealBuffers_WorkCorrectly()
     {
-        var desc = new SwapchainDescription(1280, 720, BufferCount: 3);
-        using var swapchain = new D3D12Swapchain(new IntPtr(0x1000), desc);
+        var desc = new SwapchainDescription(320, 240, BufferCount: 3);
 
-        Assert.Equal(1280, swapchain.Width);
-        Assert.Equal(720, swapchain.Height);
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new D3D12Swapchain(new IntPtr(1), desc));
+            return;
+        }
+
+        // Invalid HWND must be rejected instead of faking a swapchain
+        Assert.Throws<ArgumentException>(() => new D3D12Swapchain(new IntPtr(0x1000), desc));
+
+        using var window = WindowFactory.CreateWindow(new WindowOptions { Width = 320, Height = 240, IsVisible = false });
+        if (window is not Win32Window)
+        {
+            return;
+        }
+
+        using var swapchain = new D3D12Swapchain(window.NativeHandle, desc);
+        Assert.Equal(320, swapchain.Width);
+        Assert.Equal(240, swapchain.Height);
         Assert.Equal(3, swapchain.BufferCount);
         Assert.Equal(0UL, swapchain.PresentCount);
+        Assert.NotEqual(IntPtr.Zero, swapchain.WaitableObject);
 
         IntPtr b0 = swapchain.CurrentBackBuffer;
         Assert.NotEqual(IntPtr.Zero, b0);
 
-        swapchain.Present(vsync: true);
+        // Verify CurrentBackBuffer is genuine writable native memory (not a fake magic hex handle)
+        Span<byte> pixels = new((void*)b0, (int)swapchain.BufferByteSize);
+        pixels[0] = 0xAA;
+        pixels[^1] = 0x55;
+        Assert.Equal(0xAA, pixels[0]);
+        Assert.Equal(0x55, pixels[^1]);
+
+        swapchain.Present(vsync: false);
         Assert.Equal(1UL, swapchain.PresentCount);
         IntPtr b1 = swapchain.CurrentBackBuffer;
         Assert.NotEqual(b0, b1);
@@ -53,64 +78,83 @@ public class SwapchainTests
         IntPtr b2 = swapchain.CurrentBackBuffer;
         Assert.NotEqual(b1, b2);
 
-        // Third present wraps around in 3-buffer queue
-        swapchain.Present(vsync: true);
+        swapchain.Present(vsync: false);
         Assert.Equal(3UL, swapchain.PresentCount);
-        IntPtr b3 = swapchain.CurrentBackBuffer;
-        Assert.Equal(b0, b3);
-
-        // Resize
-        swapchain.Resize(1920, 1080);
-        Assert.Equal(1920, swapchain.Width);
-        Assert.Equal(1080, swapchain.Height);
         Assert.Equal(b0, swapchain.CurrentBackBuffer);
+
+        swapchain.Resize(640, 480);
+        Assert.Equal(640, swapchain.Width);
+        Assert.Equal(480, swapchain.Height);
+        Assert.Equal((nuint)(640 * 480 * 4), swapchain.BufferByteSize);
     }
 
     [Fact]
-    public void VulkanSwapchain_PresentModesAndSemaphores_FunctionCorrectly()
+    public unsafe void VulkanSwapchain_LoaderProbeAndRealStagingImages_FunctionCorrectly()
     {
-        var desc = new SwapchainDescription(1920, 1080, BufferCount: 2);
-        using var vk = new VulkanSwapchain(new IntPtr(0x2000), desc);
+        var desc = new SwapchainDescription(640, 360, BufferCount: 2);
 
-        Assert.Equal(1920, vk.Width);
-        Assert.Equal(1080, vk.Height);
-        Assert.Equal(2, vk.BufferCount);
+        if (!VulkanSwapchain.IsSupported)
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new VulkanSwapchain(new IntPtr(1), desc));
+            return;
+        }
 
-        IntPtr img0 = vk.CurrentBackBuffer;
-        IntPtr sem0 = vk.CurrentSemaphore;
-        Assert.NotEqual(IntPtr.Zero, img0);
-        Assert.NotEqual(IntPtr.Zero, sem0);
+        VulkanSwapchain vk;
+        try
+        {
+            vk = new VulkanSwapchain(new IntPtr(1), desc);
+        }
+        catch (InvalidOperationException)
+        {
+            // Headless VM with Vulkan loader installed but zero ICD drivers (VK_ERROR_INCOMPATIBLE_DRIVER)
+            return;
+        }
 
-        vk.Present(vsync: false);
-        Assert.Equal(VulkanInterop.VK_PRESENT_MODE_MAILBOX_KHR, vk.PresentMode);
+        using (vk)
+        {
+            Assert.Equal(640, vk.Width);
+            Assert.Equal(360, vk.Height);
+            Assert.Equal(2, vk.BufferCount);
+            Assert.NotEqual(IntPtr.Zero, vk.InstanceHandle);
+            Assert.Equal(IntPtr.Zero, vk.CurrentSemaphore);
 
-        IntPtr img1 = vk.CurrentBackBuffer;
-        Assert.NotEqual(img0, img1);
+            IntPtr img0 = vk.CurrentBackBuffer;
+            Assert.NotEqual(IntPtr.Zero, img0);
 
-        vk.Present(vsync: true);
-        Assert.Equal(VulkanInterop.VK_PRESENT_MODE_FIFO_KHR, vk.PresentMode);
-        Assert.Equal(img0, vk.CurrentBackBuffer);
+            // Verify CurrentBackBuffer is genuine writable native memory
+            Span<byte> span = new((void*)img0, (int)vk.BufferByteSize);
+            span[0] = 0x12;
+            span[^1] = 0x34;
+            Assert.Equal(0x12, span[0]);
+            Assert.Equal(0x34, span[^1]);
+
+            vk.Present(vsync: false);
+            Assert.Equal(VulkanInterop.VK_PRESENT_MODE_MAILBOX_KHR, vk.PresentMode);
+
+            IntPtr img1 = vk.CurrentBackBuffer;
+            Assert.NotEqual(img0, img1);
+
+            vk.Present(vsync: true);
+            Assert.Equal(VulkanInterop.VK_PRESENT_MODE_FIFO_KHR, vk.PresentMode);
+            Assert.Equal(img0, vk.CurrentBackBuffer);
+        }
     }
 
     [Fact]
-    public void MetalSwapchain_PixelFormatAndDrawables_AdvanceProperly()
+    public void MetalSwapchain_EnforcesApplePlatform()
     {
-        var descSdr = new SwapchainDescription(800, 600, BufferCount: 2, EnableHdr: false);
-        using var metalSdr = new MetalSwapchain(new IntPtr(0x3000), descSdr);
-        Assert.Equal(MetalSwapchain.MTLPixelFormatBGRA8Unorm, metalSdr.PixelFormat);
+        var desc = new SwapchainDescription(800, 600, BufferCount: 2, EnableHdr: false);
+        Assert.Equal(80, MetalSwapchain.MTLPixelFormatBGRA8Unorm);
+        Assert.Equal(115, MetalSwapchain.MTLPixelFormatRGBA16Float);
 
-        var descHdr = new SwapchainDescription(800, 600, BufferCount: 2, EnableHdr: true);
-        using var metalHdr = new MetalSwapchain(new IntPtr(0x3000), descHdr);
-        Assert.Equal(MetalSwapchain.MTLPixelFormatRGBA16Float, metalHdr.PixelFormat);
-
-        IntPtr d0 = metalHdr.CurrentBackBuffer;
-        metalHdr.Present();
-        IntPtr d1 = metalHdr.CurrentBackBuffer;
-        Assert.NotEqual(d0, d1);
+        if (!MetalSwapchain.IsSupported)
+        {
+            Assert.Throws<PlatformNotSupportedException>(() => new MetalSwapchain(new IntPtr(1), desc));
+        }
     }
 
     [Fact]
-    public void SoftwareSwapchain_AllocatesAndResizesBackbuffers()
+    public unsafe void SoftwareSwapchain_AllocatesAlignedWritableBackbuffersAndResizes()
     {
         var desc = new SwapchainDescription(100, 100, BufferCount: 2);
         using var sw = new SoftwareSwapchain(desc);
@@ -121,6 +165,11 @@ public class SwapchainTests
 
         IntPtr buf0 = sw.CurrentBackBuffer;
         Assert.NotEqual(IntPtr.Zero, buf0);
+        Assert.Equal(0UL, (ulong)buf0 % 64UL);
+
+        Span<byte> pixels = new((void*)buf0, (int)sw.BufferByteSize);
+        pixels.Fill(0x7F);
+        Assert.Equal(0x7F, pixels[500]);
 
         sw.Present();
         IntPtr buf1 = sw.CurrentBackBuffer;

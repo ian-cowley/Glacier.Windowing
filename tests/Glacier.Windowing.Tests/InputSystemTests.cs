@@ -121,6 +121,19 @@ public class InputSystemTests
         state.OnInput(new InputEvent(InputEventType.MouseMove, 0, 300, 400, 3000));
         Assert.Equal(300, state.Mouse.X);
         Assert.Equal(400, state.Mouse.Y);
+        Assert.Equal(0, state.Mouse.DeltaX);
+        Assert.Equal(0, state.Mouse.DeltaY);
+
+        state.OnInput(new InputEvent(InputEventType.MouseDelta, 0, 12, -8, 3500));
+        Assert.Equal(312, state.Mouse.X);
+        Assert.Equal(392, state.Mouse.Y);
+        Assert.Equal(12, state.Mouse.DeltaX);
+        Assert.Equal(-8, state.Mouse.DeltaY);
+
+        state.NewFrame();
+        Assert.Equal(0, state.Mouse.DeltaX);
+        Assert.Equal(0, state.Mouse.DeltaY);
+        Assert.Equal(312, state.Mouse.X);
 
         state.OnInput(new InputEvent(InputEventType.MouseDown, 0, 300, 400, 4000));
         Assert.True(state.Mouse.LeftButton);

@@ -1,12 +1,11 @@
 namespace Glacier.Windowing.Platform.Mac;
 
 using System;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Glacier.Windowing.Swapchain;
 
 /// <summary>
-/// Native macOS Cocoa window implementation utilizing pure C# Objective-C runtime dispatch via libobjc.dylib.
+/// Native macOS Cocoa window implementation utilizing pure C# Objective-C runtime dispatch via libobjc.A.dylib.
 /// </summary>
 public sealed class CocoaWindow : IWindow
 {
@@ -17,6 +16,8 @@ public sealed class CocoaWindow : IWindow
     private bool _isVisible;
     private bool _disposed;
 
+    public static bool IsSupported => OperatingSystem.IsMacOS();
+
     public IntPtr NativeHandle => _nsWindow;
     public IntPtr MetalLayer => _metalLayer;
 
@@ -25,6 +26,7 @@ public sealed class CocoaWindow : IWindow
         get => _size;
         set
         {
+            if (_size == value) return;
             _size = value;
             Resized?.Invoke(value.Width, value.Height);
         }
@@ -48,48 +50,82 @@ public sealed class CocoaWindow : IWindow
 
     public CocoaWindow(WindowOptions options)
     {
+        if (!OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException("CocoaWindow is only supported on macOS.");
+        }
         ArgumentNullException.ThrowIfNull(options);
 
         _title = options.Title;
         _size = new WindowSize(options.Width, options.Height);
         _isVisible = options.IsVisible;
 
-        try
-        {
-            if (OperatingSystem.IsMacOS())
-            {
-                InitializeCocoa(options);
-            }
-            else
-            {
-                _nsWindow = new IntPtr(0xCAFE);
-                _metalLayer = new IntPtr(0xBEAD);
-            }
-        }
-        catch
-        {
-            _nsWindow = new IntPtr(0xCAFE);
-            _metalLayer = new IntPtr(0xBEAD);
-        }
+        InitializeCocoa(options);
     }
 
     private void InitializeCocoa(WindowOptions options)
     {
-        IntPtr nsAppClass = LibObjC.objc_getClass("NSApplication");
-        IntPtr sharedAppSel = LibObjC.sel_registerName("sharedApplication");
-        IntPtr app = LibObjC.objc_msgSend(nsAppClass, sharedAppSel);
+        try
+        {
+            LibObjC.EnsureFrameworksLoaded();
 
-        // Set activation policy: NSApplicationActivationPolicyRegular = 0
-        IntPtr setActivationPolicySel = LibObjC.sel_registerName("setActivationPolicy:");
-        LibObjC.objc_msgSend(app, setActivationPolicySel, IntPtr.Zero);
+            IntPtr nsAppClass = LibObjC.objc_getClass("NSApplication");
+            if (nsAppClass == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("NSApplication Objective-C class could not be loaded.");
+            }
 
-        _nsWindow = new IntPtr(0xCAFE);
+            IntPtr sharedAppSel = LibObjC.sel_registerName("sharedApplication");
+            IntPtr app = LibObjC.objc_msgSend(nsAppClass, sharedAppSel);
+            if (app == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("Failed to initialize NSApplication.sharedApplication.");
+            }
+
+            IntPtr setActivationPolicySel = LibObjC.sel_registerName("setActivationPolicy:");
+            LibObjC.objc_msgSend(app, setActivationPolicySel, IntPtr.Zero);
+
+            IntPtr nsWindowClass = LibObjC.objc_getClass("NSWindow");
+            IntPtr allocSel = LibObjC.sel_registerName("alloc");
+            IntPtr initSel = LibObjC.sel_registerName("initWithContentRect:styleMask:backing:defer:");
+
+            // NSWindowStyleMaskTitled (1) | Closable (2) | Miniaturizable (4) | Resizable (8)
+            nuint styleMask = options.Resizable ? 15u : 7u;
+            var rect = new LibObjC.NSRect
+            {
+                Origin = new LibObjC.CGPoint { X = 100, Y = 100 },
+                Size = new LibObjC.CGSize { Width = Math.Max(1, options.Width), Height = Math.Max(1, options.Height) }
+            };
+
+            IntPtr allocated = LibObjC.objc_msgSend(nsWindowClass, allocSel);
+            _nsWindow = LibObjC.objc_msgSend_InitWindow(allocated, initSel, rect, styleMask, 2u, 0);
+            if (_nsWindow == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("NSWindow initialization returned nil (display server may be unavailable).");
+            }
+
+            IntPtr caMetalLayerClass = LibObjC.objc_getClass("CAMetalLayer");
+            if (caMetalLayerClass != IntPtr.Zero)
+            {
+                IntPtr layerSel = LibObjC.sel_registerName("layer");
+                _metalLayer = LibObjC.objc_msgSend(caMetalLayerClass, layerSel);
+            }
+
+            if (options.IsVisible)
+            {
+                IntPtr makeKeySel = LibObjC.sel_registerName("makeKeyAndOrderFront:");
+                LibObjC.objc_msgSend(_nsWindow, makeKeySel, IntPtr.Zero);
+            }
+        }
+        catch (Exception ex) when (ex is not PlatformNotSupportedException and not InvalidOperationException)
+        {
+            throw new InvalidOperationException("Failed to initialize native macOS Cocoa window.", ex);
+        }
     }
 
     public void PollEvents()
     {
-        if (_disposed) return;
-        // In Cocoa: [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:nil inMode:NSDefaultRunLoopMode dequeue:YES]
+        if (_disposed || _nsWindow == IntPtr.Zero) return;
     }
 
     /// <summary>
@@ -112,6 +148,17 @@ public sealed class CocoaWindow : IWindow
         _disposed = true;
 
         Closing?.Invoke();
+        if (_nsWindow != IntPtr.Zero && OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                IntPtr closeSel = LibObjC.sel_registerName("close");
+                LibObjC.objc_msgSend(_nsWindow, closeSel);
+            }
+            catch
+            {
+            }
+        }
         _nsWindow = IntPtr.Zero;
         _metalLayer = IntPtr.Zero;
 

@@ -1,12 +1,12 @@
 namespace Glacier.Windowing.Platform.Mobile;
 
 using System;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Glacier.Windowing.Swapchain;
 
 /// <summary>
 /// Android NDK HAL implementation interfacing directly with libandroid.so ANativeWindow.
+/// <see cref="NativeHandle"/> remains <see cref="IntPtr.Zero"/> until an active JNI <c>ANativeWindow*</c> is bound via <see cref="AttachSurface"/>.
 /// </summary>
 public sealed class AndroidNativeWindow : IWindow
 {
@@ -24,9 +24,6 @@ public sealed class AndroidNativeWindow : IWindow
     [DllImport(AndroidDll, SetLastError = true)]
     private static extern int ANativeWindow_getHeight(IntPtr window);
 
-    [DllImport(AndroidDll, SetLastError = true)]
-    private static extern int ANativeWindow_setBuffersGeometry(IntPtr window, int width, int height, int format);
-
     private IntPtr _nativeWindow;
     private WindowSize _size;
     private string _title;
@@ -34,12 +31,14 @@ public sealed class AndroidNativeWindow : IWindow
     private bool _disposed;
 
     public IntPtr NativeHandle => _nativeWindow;
+    public bool IsSurfaceAttached => _nativeWindow != IntPtr.Zero;
 
     public WindowSize Size
     {
         get => _size;
         set
         {
+            if (_size == value) return;
             _size = value;
             Resized?.Invoke(value.Width, value.Height);
         }
@@ -68,7 +67,7 @@ public sealed class AndroidNativeWindow : IWindow
         _title = options.Title;
         _size = new WindowSize(options.Width, options.Height);
         _isVisible = options.IsVisible;
-        _nativeWindow = new IntPtr(0x414E4452); // 'ANDR' mock handle
+        _nativeWindow = IntPtr.Zero;
     }
 
     /// <summary>
@@ -76,26 +75,28 @@ public sealed class AndroidNativeWindow : IWindow
     /// </summary>
     public void AttachSurface(IntPtr nativeWindowHandle)
     {
-        if (_nativeWindow != IntPtr.Zero && _nativeWindow != (IntPtr)0x414E4452 && OperatingSystem.IsAndroid())
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (nativeWindowHandle != IntPtr.Zero && !OperatingSystem.IsAndroid())
         {
-            try { ANativeWindow_release(_nativeWindow); } catch { }
+            throw new PlatformNotSupportedException("Attaching an ANativeWindow pointer requires the Android OS runtime.");
+        }
+
+        if (_nativeWindow != IntPtr.Zero && OperatingSystem.IsAndroid())
+        {
+            ANativeWindow_release(_nativeWindow);
         }
 
         _nativeWindow = nativeWindowHandle;
         if (_nativeWindow != IntPtr.Zero && OperatingSystem.IsAndroid())
         {
-            try
+            ANativeWindow_acquire(_nativeWindow);
+            int w = ANativeWindow_getWidth(_nativeWindow);
+            int h = ANativeWindow_getHeight(_nativeWindow);
+            if (w > 0 && h > 0)
             {
-                ANativeWindow_acquire(_nativeWindow);
-                int w = ANativeWindow_getWidth(_nativeWindow);
-                int h = ANativeWindow_getHeight(_nativeWindow);
-                if (w > 0 && h > 0)
-                {
-                    _size = new WindowSize(w, h);
-                    Resized?.Invoke(w, h);
-                }
+                _size = new WindowSize(w, h);
+                Resized?.Invoke(w, h);
             }
-            catch { }
         }
     }
 
@@ -135,7 +136,7 @@ public sealed class AndroidNativeWindow : IWindow
         _disposed = true;
 
         Closing?.Invoke();
-        if (_nativeWindow != IntPtr.Zero && _nativeWindow != (IntPtr)0x414E4452 && OperatingSystem.IsAndroid())
+        if (_nativeWindow != IntPtr.Zero && OperatingSystem.IsAndroid())
         {
             try { ANativeWindow_release(_nativeWindow); } catch { }
         }

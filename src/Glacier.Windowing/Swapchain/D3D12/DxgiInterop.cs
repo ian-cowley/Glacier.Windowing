@@ -32,6 +32,7 @@ internal static unsafe partial class DxgiInterop
     public const int DXGI_FORMAT_R16G16B16A16_FLOAT = 10;
 
     public static readonly Guid IID_IDXGIFactory4 = new("1bc6ea02-ef36-464f-bf0c-21ca39e5168a");
+    public static readonly Guid IID_IDXGIFactory5 = new("7632e1f5-ee65-4dca-87fd-84cd75f8838d");
     public static readonly Guid IID_IDXGISwapChain3 = new("94d99bdb-f1f8-4ab0-b236-7da0170edab1");
     public static readonly Guid IID_IDXGISwapChain4 = new("3d585d5a-bd4a-489e-b1f4-3dbe1ecb6452");
     public static readonly Guid IID_ID3D12Device = new("189819f1-1db6-4b57-be54-1821339b85f7");

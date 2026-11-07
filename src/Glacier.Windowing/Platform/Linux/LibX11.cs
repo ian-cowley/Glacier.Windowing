@@ -194,5 +194,8 @@ internal static unsafe partial class LibX11
     public static extern IntPtr XInternAtom(IntPtr display, string atom_name, [MarshalAs(UnmanagedType.Bool)] bool only_if_exists);
 
     [DllImport(DllName)]
-    public static extern int XSetWMProtocols(IntPtr display, IntPtr window, IntPtr[] protocols, int count);
+    public static extern int XResizeWindow(IntPtr display, IntPtr window, uint width, uint height);
+
+    [DllImport(DllName)]
+    public static extern int XSetWMProtocols(IntPtr display, IntPtr window, ref IntPtr protocols, int count);
 }

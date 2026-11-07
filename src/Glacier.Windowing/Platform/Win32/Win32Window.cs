@@ -13,8 +13,10 @@ public sealed unsafe class Win32Window : IWindow
     private static bool s_dpiAwarenessInitialized;
     private readonly string _className;
     private readonly User32.WndProc _wndProcDelegate;
+    private readonly uint _creatorThreadId;
     private IntPtr _hInstance;
     private IntPtr _hWnd;
+    private bool _classRegistered;
     private bool _disposed;
     private bool _isVisible;
     private WindowSize _size;
@@ -71,11 +73,16 @@ public sealed unsafe class Win32Window : IWindow
 
     public Win32Window(WindowOptions options)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Win32Window is only supported on Windows.");
+        }
         ArgumentNullException.ThrowIfNull(options);
 
         _title = options.Title;
         _size = new WindowSize(options.Width, options.Height);
         _rawInputEnabled = options.EnableRawInput;
+        _creatorThreadId = Kernel32.GetCurrentThreadId();
 
         InitializeDpiAwareness(options.PerMonitorDpiAware);
 
@@ -98,6 +105,7 @@ public sealed unsafe class Win32Window : IWindow
             int err = Marshal.GetLastWin32Error();
             throw new InvalidOperationException($"Failed to register Win32 window class '{_className}'. Error code: {err}");
         }
+        _classRegistered = true;
 
         uint style = User32.WS_OVERLAPPEDWINDOW;
         if (!options.Resizable)
@@ -126,6 +134,7 @@ public sealed unsafe class Win32Window : IWindow
         {
             int err = Marshal.GetLastWin32Error();
             User32.UnregisterClassW(_className, _hInstance);
+            _classRegistered = false;
             throw new InvalidOperationException($"Failed to create native Win32 window. Error code: {err}");
         }
 
@@ -152,7 +161,7 @@ public sealed unsafe class Win32Window : IWindow
         }
         catch
         {
-            // Fallback gracefully on older OS revisions
+            // Fallback gracefully on older OS revisions or if process DPI awareness was already locked
         }
         s_dpiAwarenessInitialized = true;
     }
@@ -165,6 +174,10 @@ public sealed unsafe class Win32Window : IWindow
         {
             User32.TranslateMessage(ref msg);
             User32.DispatchMessageW(ref msg);
+            if (_hWnd == IntPtr.Zero)
+            {
+                break;
+            }
         }
     }
 
@@ -187,6 +200,21 @@ public sealed unsafe class Win32Window : IWindow
                 Resized?.Invoke(width, height);
                 return IntPtr.Zero;
 
+            case User32.WM_DPICHANGED:
+                if (lParam != IntPtr.Zero)
+                {
+                    User32.RECT* suggested = (User32.RECT*)lParam;
+                    User32.SetWindowPos(
+                        hWnd,
+                        IntPtr.Zero,
+                        suggested->left,
+                        suggested->top,
+                        suggested->Width,
+                        suggested->Height,
+                        0x0004 | 0x0010); // SWP_NOZORDER | SWP_NOACTIVATE
+                }
+                return IntPtr.Zero;
+
             case User32.WM_CLOSE:
                 Closing?.Invoke();
                 User32.DestroyWindow(hWnd);
@@ -199,7 +227,7 @@ public sealed unsafe class Win32Window : IWindow
             case User32.WM_INPUT:
                 if (_rawInputEnabled)
                 {
-                    Win32RawInput.Process(lParam, InputReceived, nowNs);
+                    Win32RawInput.Process(hWnd, lParam, InputReceived, nowNs);
                 }
                 break;
 
@@ -262,6 +290,44 @@ public sealed unsafe class Win32Window : IWindow
                 }
                 break;
 
+            case User32.WM_MBUTTONDOWN:
+                if (!_rawInputEnabled)
+                {
+                    int mx = (short)(lParam.ToInt64() & 0xFFFF);
+                    int my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseDown, 2, mx, my, nowNs));
+                }
+                break;
+
+            case User32.WM_MBUTTONUP:
+                if (!_rawInputEnabled)
+                {
+                    int mx = (short)(lParam.ToInt64() & 0xFFFF);
+                    int my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseUp, 2, mx, my, nowNs));
+                }
+                break;
+
+            case User32.WM_XBUTTONDOWN:
+                if (!_rawInputEnabled)
+                {
+                    int xButton = ((int)(wParam.ToInt64() >> 16) & 0xFFFF) == 2 ? 4 : 3;
+                    int mx = (short)(lParam.ToInt64() & 0xFFFF);
+                    int my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseDown, xButton, mx, my, nowNs));
+                }
+                break;
+
+            case User32.WM_XBUTTONUP:
+                if (!_rawInputEnabled)
+                {
+                    int xButton = ((int)(wParam.ToInt64() >> 16) & 0xFFFF) == 2 ? 4 : 3;
+                    int mx = (short)(lParam.ToInt64() & 0xFFFF);
+                    int my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    InputReceived?.Invoke(new InputEvent(InputEventType.MouseUp, xButton, mx, my, nowNs));
+                }
+                break;
+
             case User32.WM_MOUSEWHEEL:
                 if (!_rawInputEnabled)
                 {
@@ -276,25 +342,42 @@ public sealed unsafe class Win32Window : IWindow
 
     public void Dispose()
     {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool disposing)
+    {
         if (_disposed) return;
         _disposed = true;
 
-        if (_hWnd != IntPtr.Zero)
+        IntPtr hwnd = _hWnd;
+        if (hwnd != IntPtr.Zero)
         {
-            User32.DestroyWindow(_hWnd);
-            _hWnd = IntPtr.Zero;
+            if (Kernel32.GetCurrentThreadId() == _creatorThreadId)
+            {
+                // Win32 DestroyWindow enforces strict creator-thread affinity.
+                User32.DestroyWindow(hwnd);
+                _hWnd = IntPtr.Zero;
+            }
+            else
+            {
+                // Cross-thread disposal or GC finalizer thread: post WM_CLOSE asynchronously to the owning thread.
+                User32.PostMessageW(hwnd, User32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                _hWnd = IntPtr.Zero;
+                return;
+            }
         }
 
-        if (!string.IsNullOrEmpty(_className) && _hInstance != IntPtr.Zero)
+        if (disposing && _classRegistered && !string.IsNullOrEmpty(_className) && _hInstance != IntPtr.Zero)
         {
             User32.UnregisterClassW(_className, _hInstance);
+            _classRegistered = false;
         }
-
-        GC.SuppressFinalize(this);
     }
 
     ~Win32Window()
     {
-        Dispose();
+        Dispose(disposing: false);
     }
 }
