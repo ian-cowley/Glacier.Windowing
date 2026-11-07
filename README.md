@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **Repository Consolidated & Archived (2026-11):** This package has been consolidated into **[$(System.Collections.Hashtable.Target)](https://github.com/ian-cowley/Glacier.Desktop)** (namespace `Glacier.Desktop.Windowing`). Please reference the `Glacier.Desktop` NuGet package (v1.2.0+) for all future updates.
+
+---
 ![Glacier.Windowing Banner](assets/banner.jpg)
 
 # Glacier.Windowing
@@ -93,3 +97,4 @@ python scripts/security_check.py Glacier.Windowing
 ## 4. License
 
 MIT License. Copyright (c) 2026 Ian Cowley.
+
